@@ -1,5 +1,13 @@
-mars
+marsPlugin
 ============
 
-Palladium:
-mars subproject - macro-expansion at runtime for Scala
+Mars project - macros at runtime for Scala,
+plugin for runtime macro expansion
+
+### Build process
+
+To add marsPlugin jar to local ivy repo use:
+
+```shell
+$ sbt publish-local
+```

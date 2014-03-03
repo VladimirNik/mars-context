@@ -1,0 +1,4 @@
+<plugin>
+  <name>marsPlugin</name>
+  <classname>scala.mars.plugin.MarsPlugin</classname>
+</plugin>
