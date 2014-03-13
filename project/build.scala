@@ -10,6 +10,7 @@ object build extends Build {
 
   lazy val sharedSettings = Seq(
     scalaVersion := "2.11.0-RC1",
+    scalaHome := Some(file("/home/vova/scala-projects/GSoC/scala/scala/build/pack")),
     organization := "org.scala-lang.plugins",
     name         := "mars"
   )
