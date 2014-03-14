@@ -43,7 +43,8 @@ class MarsPlugin(val global: Global) extends Plugin {
           if (fileName.endsWith(".scala")) {
             val tree = compUnit.body
             println("unit: " + compUnit)
-            //val contextCreator = ContextCreator(tree, compUnit)
+            val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
+            val contextCreator = new ContextCreator(initialContext)
             println(showCode(tree))
           } else
             println("File " + fileName + " is not processed")
@@ -54,61 +55,221 @@ class MarsPlugin(val global: Global) extends Plugin {
           }
       }
     }
-
+    
     object ContextCreator {
-      def apply(tree: Tree, compUnit: CompilationUnit) = {
-        val traverser = new {
-          val unit = compUnit
-          val defName = "test"
-        } with ContextCreator
-        traverser.newContext(tree)
-      }
+      def apply(context: Context) = 
+        new ContextCreator(context)
     }
     
-    trait ContextCreator {
-      val unit: CompilationUnit
-      val defName: String
-      
-      var context = analyzer.rootContext(unit, EmptyTree, false)
-      
-      printScopeInfo
+    class ContextCreator(var context: Context) {
       
       def printScopeInfo = {
-        println("==================")
         println(s"context: $context")
         println(s"scope: ${context.scope}")
-        println("==================")
-      }
-
-      def newContext(tree: Tree): Unit = {
-        tree match {
-          case tree @ ModuleDef(_, _, impl) =>
-            val sym = tree.symbol
-            val clazz = sym.moduleClass
-
-            // Self part
-            context = context.makeNewScope(tree, clazz)
-            //analyzer.newNamer(context).enterSelf(impl.self)
-
-            // Body part
-            context = context.makeNewScope(impl, clazz)
-
-          case tree: PackageDef =>
-            context = context.make(tree, tree.symbol.moduleClass, tree.symbol.info.decls)
-
-          case tree: Template =>
-            
-          // Parsed already as ModuleDef children
-          case _: TypeDef =>
-            
-          // Do Nothing
-          case _: DefDef | _: ClassDef | _: ValDef =>
-
-          case _ => // TODO: add processing for all cases
-        }
       }
       
-    }
+      import scala.collection.mutable.ListBuffer
+      var treeContexts: ListBuffer[(Tree, Context)] = ListBuffer.empty
+      def addToContexts(tree: Tree, context: Context) = { treeContexts += ((tree, context)) }
+      
+      def contextedStats(stats: List[Tree], exprOwner: Symbol = NoSymbol): Unit = {
+        val inBlock = exprOwner == context.owner
+        def includesTargetPos(tree: Tree) =
+          tree.pos.isRange && context.unit.exists && (tree.pos includes context.unit.targetPos)
+        val localTarget = stats exists includesTargetPos
+        def typedStat(stat: Tree): Unit = {
+          stat match {
+            case imp @ Import(_, _) =>
+              context = context.make(imp)
+              addToContexts(imp, context)
+            case _ =>              
+              if (localTarget && !includesTargetPos(stat)) {
+                // skip typechecking of statements in a sequence where some other statement includes
+                // the targetposition
+                addToContexts(stat, context)
+              } else {
+                val localContextCreator = if (inBlock || (stat.isDef && !stat.isInstanceOf[LabelDef])) {
+                  this
+                } else ContextCreator(context.make(stat, exprOwner))
 
+                localContextCreator.contexted(stat)
+                if (localContextCreator != this) this.treeContexts ++= localContextCreator.treeContexts 
+              }
+            }
+        }
+
+        stats map typedStat
+      }
+      
+      def typedTemplate(templ: Template) = {
+        val self = templ.self 
+
+        if (self.name != nme.WILDCARD)
+          context.scope enter self.symbol
+
+        contextedStats(templ.body, templ.symbol)
+      }
+      
+      def typedModuleDef(mdef: ModuleDef) = {
+        val clazz     = mdef.symbol.moduleClass
+
+        val impl1 = ContextCreator(context.make(mdef.impl, clazz, newScope)).typedTemplate(mdef.impl)
+      }
+      
+      def typedClassDef(cdef: ClassDef) = {
+        val clazz = cdef.symbol
+        reenterTypeParams(cdef.tparams)
+        val tparams1 = cdef.tparams map (typedTypeDef)
+        val impl1 = ContextCreator(context.make(cdef.impl, clazz, newScope)).typedTemplate(cdef.impl)
+      }
+      
+      def reenterTypeParams(tparams: List[TypeDef]): List[Symbol] =
+        for (tparam <- tparams) yield {
+          context.scope enter tparam.symbol
+          tparam.symbol.deSkolemize
+        }
+      
+      def reenterValueParams(vparamss: List[List[ValDef]]) {
+        for (vparams <- vparamss)
+          for (vparam <- vparams)
+            context.scope enter vparam.symbol
+      }
+      
+      def typedTypeDef(tdef: TypeDef): Unit =
+        if (tdef.tparams.nonEmpty)
+          ContextCreator(context.makeNewScope(tdef, tdef.symbol)).typedTypeDefImpl(tdef)
+        else
+          typedTypeDefImpl(tdef)
+
+      private def typedTypeDefImpl(tdef: TypeDef) = {
+        reenterTypeParams(tdef.tparams)
+        val tparams1 = tdef.tparams map typedTypeDef
+
+        val rhs1 = contexted(tdef.rhs)
+      }
+      
+      def typedValDef(vdef: ValDef) = {
+        val sym = vdef.symbol
+        val valDefContextCreator = {
+          val maybeConstrCtx =
+            if ((sym.isParameter || sym.isEarlyInitialized) && sym.owner.isConstructor) context.makeConstructorContext
+            else context
+          ContextCreator(maybeConstrCtx.makeNewScope(vdef, sym))
+        }
+        valDefContextCreator.typedValDefImpl(vdef)
+      }
+          
+      private def typedValDefImpl(vdef: ValDef) =
+        ContextCreator(context).contexted(vdef.rhs)
+      
+      final def constrTyperIf(inConstr: Boolean) =
+        if (inConstr) {
+          ContextCreator(context.makeConstructorContext)
+        } else this
+    
+      def defDefTyper(ddef: DefDef) = {
+        val sym = ddef.symbol 
+        val isConstrDefaultGetter = ddef.mods.hasDefault && sym.owner.isModuleClass &&
+            nme.defaultGetterToMethod(sym.name) == nme.CONSTRUCTOR
+        ContextCreator(context.makeNewScope(ddef, sym)).constrTyperIf(isConstrDefaultGetter)
+      }  
+      
+      def typedDefDef(ddef: DefDef) = {
+        val meth = ddef.symbol
+
+        reenterTypeParams(ddef.tparams)
+        reenterValueParams(ddef.vparamss)
+
+        val tparams1 = ddef.tparams map typedTypeDef
+        val vparamss1 = ddef.vparamss map (_ map typedValDef)
+
+        meth.annotations.map(_.completeInfo())
+
+        var rhs1 =
+          // if (ddef.name == nme.CONSTRUCTOR && !ddef.symbol.hasStaticFlag) { // need this to make it possible to generate static ctors
+            ContextCreator(context).contexted(ddef.rhs)
+          // } else {
+          //  transformedOrTyped(ddef.rhs, EXPRmode, tpt1.tpe)
+          // }
+
+          // else if (meth.isMacro) {
+            // typechecking macro bodies is sort of unconventional
+            // that's why we employ our custom typing scheme orchestrated outside of the typer
+            // transformedOr(ddef.rhs, typedMacroBody(this, ddef))
+          // } 
+      }
+      
+//      def typedQualifier(tree: Tree) =
+//        contexted(tree)
+//      
+//      def typedSelectOrSuperCall(tree: Select) = tree match {
+//        case Select(qual @ Super(_, _), nme.CONSTRUCTOR) =>
+//          // the qualifier type of a supercall constructor is its first parent class
+//          typedSelect(tree, typedSelectOrSuperQualifier(qual), nme.CONSTRUCTOR)
+//        case Select(qual, name) =>
+//          val qualTyped = typedQualifier(qual)
+//          val qualStableOrError = (
+//            if (qualTyped.isErrorTyped || !name.isTypeName || treeInfo.admitsTypeSelection(qualTyped))
+//              qualTyped
+//            else
+//              UnstableTreeError(qualTyped)
+//          )
+//          val tree1 = name match {
+//            case nme.withFilter if !settings.future => tryWithFilterAndFilter(tree, qualStableOrError)
+//            case _              => typedSelect(tree, qualStableOrError, name)
+//          }
+//      }
+        
+      def typedBlock(block0: Block) = {
+        //for (stat <- block0.stats) enterLabelDef(stat)
+
+        val stats2 = contextedStats(block0.stats, context.owner)
+        val expr1 = ContextCreator(context).contexted(block0.expr)
+      }
+      
+      //return context resulted from tree processing
+      def contexted(tree: Tree): Unit = {
+        val sym: Symbol = tree.symbol
+        val createdContext = tree match {
+          case tree @ ModuleDef(_, _, impl) =>
+            val moduleContext = context.makeNewScope(tree, sym)
+            val newCreator = ContextCreator(moduleContext)
+            newCreator.typedModuleDef(tree)
+            treeContexts ++= newCreator.treeContexts 
+            moduleContext
+
+          case pdef: PackageDef => 
+            val sym = tree.symbol
+            val pdefCont = context.make(tree, sym.moduleClass, sym.info.decls)
+            val newCreator = ContextCreator(pdefCont)
+            newCreator.contextedStats(pdef.stats, NoSymbol)
+            treeContexts ++= newCreator.treeContexts 
+            pdefCont
+          
+          case tree: ClassDef => 
+            val classContext = context.makeNewScope(tree, sym)
+            val newCreator = ContextCreator(classContext)
+            newCreator.typedClassDef(tree)
+            treeContexts ++= newCreator.treeContexts 
+            classContext
+            
+          case tree: TypeDef => typedTypeDef(tree)
+            null
+            
+          case tree: ValDef => typedValDef(tree)
+            null
+
+          case tree: DefDef => defDefTyper(tree).typedDefDef(tree)
+            null
+
+          case tree: Block => typedBlock(tree)
+            null
+  
+            
+          case _ => null // TODO: add processing for all cases
+        }
+        addToContexts(tree, createdContext)
+      }
+    }
   }
 }
