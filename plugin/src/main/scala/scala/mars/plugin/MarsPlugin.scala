@@ -42,10 +42,20 @@ class MarsPlugin(val global: Global) extends Plugin {
           val fileName = compUnit.source.file.name
           if (fileName.endsWith(".scala")) {
             val tree = compUnit.body
+            println("=================================================")
+            println("=================================================")
+            println("================== PLUGIN WORK ==================")
+            println("=================================================")
+            println("=================================================")  
+            println(s"phase name: ${prev.name}")
             println("unit: " + compUnit)
-            val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
-            val contextCreator = new ContextCreator(initialContext)
-            println(showCode(tree))
+            println("=================================================")
+            println("=============== Context Creator =================")  
+            println("=================================================")
+            //val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
+            //ContextCreator(initialContext).contexted(tree)
+            println("=================================================")
+            println("=================================================")
           } else
             println("File " + fileName + " is not processed")
           } catch {
@@ -61,16 +71,8 @@ class MarsPlugin(val global: Global) extends Plugin {
         new ContextCreator(context)
     }
     
-    class ContextCreator(var context: Context) {
-      
-      def printScopeInfo = {
-        println(s"context: $context")
-        println(s"scope: ${context.scope}")
-      }
-      
-      import scala.collection.mutable.ListBuffer
-      var treeContexts: ListBuffer[(Tree, Context)] = ListBuffer.empty
-      def addToContexts(tree: Tree, context: Context) = { treeContexts += ((tree, context)) }
+    class ContextCreator(context0: Context) {
+      var context = context0
       
       def contextedStats(stats: List[Tree], exprOwner: Symbol = NoSymbol): Unit = {
         val inBlock = exprOwner == context.owner
@@ -81,19 +83,16 @@ class MarsPlugin(val global: Global) extends Plugin {
           stat match {
             case imp @ Import(_, _) =>
               context = context.make(imp)
-              addToContexts(imp, context)
             case _ =>              
               if (localTarget && !includesTargetPos(stat)) {
                 // skip typechecking of statements in a sequence where some other statement includes
                 // the targetposition
-                addToContexts(stat, context)
               } else {
                 val localContextCreator = if (inBlock || (stat.isDef && !stat.isInstanceOf[LabelDef])) {
                   this
                 } else ContextCreator(context.make(stat, exprOwner))
 
                 localContextCreator.contexted(stat)
-                if (localContextCreator != this) this.treeContexts ++= localContextCreator.treeContexts 
               }
             }
         }
@@ -111,16 +110,16 @@ class MarsPlugin(val global: Global) extends Plugin {
       }
       
       def typedModuleDef(mdef: ModuleDef) = {
-        val clazz     = mdef.symbol.moduleClass
+        val clazz = mdef.symbol.moduleClass
 
-        val impl1 = ContextCreator(context.make(mdef.impl, clazz, newScope)).typedTemplate(mdef.impl)
+        ContextCreator(context.make(mdef.impl, clazz, newScope)).typedTemplate(mdef.impl)
       }
       
       def typedClassDef(cdef: ClassDef) = {
         val clazz = cdef.symbol
         reenterTypeParams(cdef.tparams)
-        val tparams1 = cdef.tparams map (typedTypeDef)
-        val impl1 = ContextCreator(context.make(cdef.impl, clazz, newScope)).typedTemplate(cdef.impl)
+        cdef.tparams map (typedTypeDef)
+        ContextCreator(context.make(cdef.impl, clazz, newScope)).typedTemplate(cdef.impl)
       }
       
       def reenterTypeParams(tparams: List[TypeDef]): List[Symbol] =
@@ -185,9 +184,9 @@ class MarsPlugin(val global: Global) extends Plugin {
 
         meth.annotations.map(_.completeInfo())
 
-        var rhs1 =
+          //var rhs1 =
           // if (ddef.name == nme.CONSTRUCTOR && !ddef.symbol.hasStaticFlag) { // need this to make it possible to generate static ctors
-            ContextCreator(context).contexted(ddef.rhs)
+        ContextCreator(context).contexted(ddef.rhs)
           // } else {
           //  transformedOrTyped(ddef.rhs, EXPRmode, tpt1.tpe)
           // }
@@ -198,27 +197,6 @@ class MarsPlugin(val global: Global) extends Plugin {
             // transformedOr(ddef.rhs, typedMacroBody(this, ddef))
           // } 
       }
-      
-//      def typedQualifier(tree: Tree) =
-//        contexted(tree)
-//      
-//      def typedSelectOrSuperCall(tree: Select) = tree match {
-//        case Select(qual @ Super(_, _), nme.CONSTRUCTOR) =>
-//          // the qualifier type of a supercall constructor is its first parent class
-//          typedSelect(tree, typedSelectOrSuperQualifier(qual), nme.CONSTRUCTOR)
-//        case Select(qual, name) =>
-//          val qualTyped = typedQualifier(qual)
-//          val qualStableOrError = (
-//            if (qualTyped.isErrorTyped || !name.isTypeName || treeInfo.admitsTypeSelection(qualTyped))
-//              qualTyped
-//            else
-//              UnstableTreeError(qualTyped)
-//          )
-//          val tree1 = name match {
-//            case nme.withFilter if !settings.future => tryWithFilterAndFilter(tree, qualStableOrError)
-//            case _              => typedSelect(tree, qualStableOrError, name)
-//          }
-//      }
         
       def typedBlock(block0: Block) = {
         //for (stat <- block0.stats) enterLabelDef(stat)
@@ -228,47 +206,58 @@ class MarsPlugin(val global: Global) extends Plugin {
       }
       
       //return context resulted from tree processing
-      def contexted(tree: Tree): Unit = {
+      def contexted(tree: Tree): Context = {        
+        def printScopeInfo = {
+          println("=============================")
+          println(s"show(tree): ${show(tree)}\n")
+          println(s"showRaw(tree): ${showRaw(tree)}\n")
+          println(s"context: $context\n")
+          println(s"scope: ${context.scope}") 
+          println("=============================")
+        }
+        
         val sym: Symbol = tree.symbol
-        val createdContext = tree match {
+        tree match {
           case tree @ ModuleDef(_, _, impl) =>
             val moduleContext = context.makeNewScope(tree, sym)
             val newCreator = ContextCreator(moduleContext)
             newCreator.typedModuleDef(tree)
-            treeContexts ++= newCreator.treeContexts 
-            moduleContext
 
           case pdef: PackageDef => 
             val sym = tree.symbol
             val pdefCont = context.make(tree, sym.moduleClass, sym.info.decls)
             val newCreator = ContextCreator(pdefCont)
             newCreator.contextedStats(pdef.stats, NoSymbol)
-            treeContexts ++= newCreator.treeContexts 
-            pdefCont
           
           case tree: ClassDef => 
             val classContext = context.makeNewScope(tree, sym)
             val newCreator = ContextCreator(classContext)
             newCreator.typedClassDef(tree)
-            treeContexts ++= newCreator.treeContexts 
-            classContext
             
           case tree: TypeDef => typedTypeDef(tree)
-            null
             
           case tree: ValDef => typedValDef(tree)
-            null
 
           case tree: DefDef => defDefTyper(tree).typedDefDef(tree)
-            null
 
           case tree: Block => typedBlock(tree)
-            null
-  
+          
+          case sup: Super => contexted(sup.qual)
+          
+          case select @ Select(qual, _) => contexted(qual)
+          
+          case apply @ Apply(fun, args) => contexted(fun) // fix for args
+          
+          case tree: This => // context shouldn't be changed
+
+          case tree: Literal => // context shouldn't be changed
             
-          case _ => null // TODO: add processing for all cases
+          case tree: Ident => // context shouldn't be changed
+
+          case _ => // TODO: add processing for other trees
         }
-        addToContexts(tree, createdContext)
+        printScopeInfo
+        context
       }
     }
   }
