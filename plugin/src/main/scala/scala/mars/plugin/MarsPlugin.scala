@@ -52,8 +52,8 @@ class MarsPlugin(val global: Global) extends Plugin {
             println("=================================================")
             println("=============== Context Creator =================")  
             println("=================================================")
-            //val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
-            //ContextCreator(initialContext).contexted(tree)
+            val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
+            ContextCreator(initialContext).contexted(tree)
             println("=================================================")
             println("=================================================")
           } else
@@ -125,7 +125,6 @@ class MarsPlugin(val global: Global) extends Plugin {
       def reenterTypeParams(tparams: List[TypeDef]): List[Symbol] =
         for (tparam <- tparams) yield {
           context.scope enter tparam.symbol
-          tparam.symbol.deSkolemize
         }
       
       def reenterValueParams(vparamss: List[List[ValDef]]) {
@@ -141,10 +140,8 @@ class MarsPlugin(val global: Global) extends Plugin {
           typedTypeDefImpl(tdef)
 
       private def typedTypeDefImpl(tdef: TypeDef) = {
-        reenterTypeParams(tdef.tparams)
         val tparams1 = tdef.tparams map typedTypeDef
-
-        val rhs1 = contexted(tdef.rhs)
+        contexted(tdef.rhs) // typedType ~ typed
       }
       
       def typedValDef(vdef: ValDef) = {
@@ -159,7 +156,7 @@ class MarsPlugin(val global: Global) extends Plugin {
       }
           
       private def typedValDefImpl(vdef: ValDef) =
-        ContextCreator(context).contexted(vdef.rhs)
+        contexted(vdef.rhs)
       
       final def constrTyperIf(inConstr: Boolean) =
         if (inConstr) {
@@ -179,30 +176,17 @@ class MarsPlugin(val global: Global) extends Plugin {
         reenterTypeParams(ddef.tparams)
         reenterValueParams(ddef.vparamss)
 
-        val tparams1 = ddef.tparams map typedTypeDef
-        val vparamss1 = ddef.vparamss map (_ map typedValDef)
+        ddef.tparams map typedTypeDef
+        ddef.vparamss map (_ map typedValDef)
 
-        meth.annotations.map(_.completeInfo())
-
-          //var rhs1 =
-          // if (ddef.name == nme.CONSTRUCTOR && !ddef.symbol.hasStaticFlag) { // need this to make it possible to generate static ctors
-        ContextCreator(context).contexted(ddef.rhs)
-          // } else {
-          //  transformedOrTyped(ddef.rhs, EXPRmode, tpt1.tpe)
-          // }
-
-          // else if (meth.isMacro) {
-            // typechecking macro bodies is sort of unconventional
-            // that's why we employ our custom typing scheme orchestrated outside of the typer
-            // transformedOr(ddef.rhs, typedMacroBody(this, ddef))
-          // } 
+        contexted(ddef.rhs)
       }
         
       def typedBlock(block0: Block) = {
         //for (stat <- block0.stats) enterLabelDef(stat)
 
-        val stats2 = contextedStats(block0.stats, context.owner)
-        val expr1 = ContextCreator(context).contexted(block0.expr)
+        contextedStats(block0.stats, context.owner)
+        contexted(block0.expr)
       }
       
       //return context resulted from tree processing
@@ -216,6 +200,10 @@ class MarsPlugin(val global: Global) extends Plugin {
           println("=============================")
         }
         
+       println(s"---------------------------")
+       println(s"before typed: ${show(tree)}")
+       println(s"---------------------------")
+        
         val sym: Symbol = tree.symbol
         tree match {
           case tree @ ModuleDef(_, _, impl) =>
@@ -223,16 +211,15 @@ class MarsPlugin(val global: Global) extends Plugin {
             val newCreator = ContextCreator(moduleContext)
             newCreator.typedModuleDef(tree)
 
-          case pdef: PackageDef => 
+          case pdef @ PackageDef(pid, stats) => 
             val sym = tree.symbol
+            contexted(pid)
             val pdefCont = context.make(tree, sym.moduleClass, sym.info.decls)
-            val newCreator = ContextCreator(pdefCont)
-            newCreator.contextedStats(pdef.stats, NoSymbol)
+            ContextCreator(pdefCont).contextedStats(pdef.stats, NoSymbol)
           
           case tree: ClassDef => 
             val classContext = context.makeNewScope(tree, sym)
-            val newCreator = ContextCreator(classContext)
-            newCreator.typedClassDef(tree)
+            ContextCreator(classContext).typedClassDef(tree)
             
           case tree: TypeDef => typedTypeDef(tree)
             
@@ -240,7 +227,9 @@ class MarsPlugin(val global: Global) extends Plugin {
 
           case tree: DefDef => defDefTyper(tree).typedDefDef(tree)
 
-          case tree: Block => typedBlock(tree)
+          case tree: Block => 
+            val blockContext = context.makeNewScope(tree, context.owner)
+            ContextCreator(blockContext).typedBlock(tree)
           
           case sup: Super => contexted(sup.qual)
           
