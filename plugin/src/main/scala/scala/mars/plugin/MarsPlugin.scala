@@ -44,34 +44,41 @@ class MarsPlugin(val global: Global) extends Plugin {
           if (fileName.endsWith(".scala")) {
             val tree = compUnit.body
             println("=================================================")
-            println("=================================================")
             println("================== PLUGIN WORK ==================")
             println("=================================================")
-            println("=================================================")  
             println(s"phase name: ${prev.name}")
             println("unit: " + compUnit)
             println("=================================================")
             println("=============== Context Creator =================")  
             println("=================================================")
             val initialContext = analyzer.rootContext(compUnit, EmptyTree, false)
-            ContextFactory.ContextCreator(initialContext).contexted(tree)
-            val contextInfo = ContextFactory.applyContextInfo
+            
+            import ContextFactory._
+            
+            ContextCreator(initialContext).contexted(tree)
+            val contextInfo = applyContextInfo
             if (contextInfo.nonEmpty) {
               val (applyTree, resultedContext) = contextInfo.get
               println(s"\napplyTree: ${showRaw(applyTree)}\n")
               println(s"===> resulted context:\n $resultedContext\n")
               println(s"===> resulted scope:\n ${resultedContext.scope}\n")
 
-              val parsedTree = q"""println("Hello: " + a)"""
+              val untypedInjectTree = q"""println("Hello: " + a)"""
               val typechecker = global.analyzer.newTyper(resultedContext)
-              val resTree = typechecker.typed(parsedTree)
-              println(s"\nresultedTree: ${showRaw(resTree)}\n")
+              val typedInjectTree = typechecker.typed(untypedInjectTree)
+              println(s"\nresultedTree: ${showRaw(typedInjectTree)}\n")
+              
+              val unitTree = compUnit.body
+              val transformedTree = RuntimeMacroInjector(unitTree, typedInjectTree).expandMacroTree
+              println(s"\ntransformedTree: ${showRaw(transformedTree)}\n")
+              println(s"\ntransformedShowCode: ${showCode(transformedTree)}\n")
+              
+              compUnit.body = transformedTree
             } else {
               println("\n===> tree is not found!!!\n")
             }
             //mode we should get from typer
             //global.analyzer.macroExpand(null, null, c.contextMode , null)
-            println("=================================================")
             println("=================================================")
           } else
             println("File " + fileName + " is not processed")
@@ -82,9 +89,32 @@ class MarsPlugin(val global: Global) extends Plugin {
           }
       }
     }
-    
+
     object ContextFactory {
       var applyContextInfo: Option[(Tree, Context)] = None
+      
+      def isRuntimeMacro(apply: Apply) = {
+        val Apply(fun, args) = apply
+        fun match {
+          case Select(_, name) => name.toString() == "runtimeMacro"
+          case _ => false
+        }
+      }
+      
+      object RuntimeMacroInjector {
+        def apply(tree: Tree, macroTree: Tree) = new RuntimeMacroInjector(tree, macroTree)
+      }
+
+      class RuntimeMacroInjector(val body: Tree, val macroTree: Tree) extends Transformer {
+        def expandMacroTree: Tree = transform(body)
+
+        override def transform(tree: Tree) = {
+          tree match {
+            case apply : Apply if isRuntimeMacro(apply) => macroTree
+            case _ => super.transform(tree)
+          }
+        }
+      }
 
       object ContextCreator {
         def apply(context: Context) =
@@ -211,19 +241,8 @@ class MarsPlugin(val global: Global) extends Plugin {
 
         //return context resulted from tree processing
         def contexted(tree: Tree): Context = {
-          def printScopeInfo = {
-            println("=============================")
-            println(s"show(tree): ${show(tree)}\n")
-            println(s"showRaw(tree): ${showRaw(tree)}\n")
-            println(s"context: $context\n")
-            println(s"scope: ${context.scope}")
-            println("=============================")
-          }
-
-          println(s"---------------------------")
-          println(s"before typed: ${show(tree)}")
-          println(s"---------------------------")
-
+          printBeforeTree(tree)
+          
           val sym: Symbol = tree.symbol
           tree match {
             case tree @ ModuleDef(_, _, impl) =>
@@ -272,8 +291,23 @@ class MarsPlugin(val global: Global) extends Plugin {
 
             case _ => // TODO: add processing for other trees
           }
-          printScopeInfo
+          printScopeInfo(tree)
           context
+        }
+
+        def printScopeInfo(tree: Tree) = {
+          println("=============================")
+          println(s"show(tree): ${show(tree)}\n")
+          println(s"showRaw(tree): ${showRaw(tree)}\n")
+          println(s"context: $context\n")
+          println(s"scope: ${context.scope}")
+          println("=============================")
+        }
+
+        def printBeforeTree(tree: Tree) = {
+          println(s"---------------------------")
+          println(s"before typed: ${show(tree)}")
+          println(s"---------------------------")
         }
       }
     }

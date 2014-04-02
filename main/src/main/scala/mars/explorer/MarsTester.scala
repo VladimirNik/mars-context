@@ -8,7 +8,7 @@
 //  def test = println("Hello, Mars!")
 //}
 package mars
-class OuterClass {
+object MarsTester {
   def main(args: Array[String]) = test(42)
   
   def test(a: Int): Unit = runtimeMacro()
