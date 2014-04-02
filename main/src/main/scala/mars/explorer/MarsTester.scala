@@ -8,4 +8,7 @@
 //  def test = println("Hello, Mars!")
 //}
 package mars
-class OuterClass
+class OuterClass {
+  def main(args: Array[String]) = test(42)
+  def test(x: Int) = println("Test text: " + x)
+}
