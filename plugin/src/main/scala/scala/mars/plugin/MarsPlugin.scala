@@ -60,10 +60,12 @@ class MarsPlugin(val global: Global) extends Plugin {
               val (applyTree, resultedContext) = contextInfo.get
               println(s"\napplyTree: ${showRaw(applyTree)}\n")
               println(s"===> resulted context:\n $resultedContext\n")
+              println(s"===> resulted scope:\n ${resultedContext.scope}\n")
 
-              //val parsedTree = q"println(a)"
-              //val typechecker = global.analyzer.newTyper(resultedContext)
-              //val resTree = typechecker.typed(parsedTree)
+              val parsedTree = q"""println("Hello: " + a)"""
+              val typechecker = global.analyzer.newTyper(resultedContext)
+              val resTree = typechecker.typed(parsedTree)
+              println(s"\nresultedTree: ${showRaw(resTree)}\n")
             } else {
               println("\n===> tree is not found!!!\n")
             }
@@ -257,7 +259,7 @@ class MarsPlugin(val global: Global) extends Plugin {
               //TODO fix tree in context
               contexted(fun) // fix for args
               fun match {
-                case Select(_, name) if name.toString() == "test" =>
+                case Select(_, name) if name.toString() == "runtimeMacro" =>
                   applyContextInfo = Option(apply, context)
                 case _ =>
               }

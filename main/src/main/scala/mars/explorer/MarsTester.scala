@@ -10,5 +10,8 @@
 package mars
 class OuterClass {
   def main(args: Array[String]) = test(42)
-  def test(x: Int) = println("Test text: " + x)
+  
+  def test(a: Int): Unit = runtimeMacro()
+  
+  def runtimeMacro(): Unit = ???
 }
