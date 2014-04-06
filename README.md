@@ -1,5 +1,7 @@
-marsPlugin
+mars-context
 ============
+
+Project for testing Mars context
 
 Mars project - macros at runtime for Scala,
 plugin for runtime macro expansion
